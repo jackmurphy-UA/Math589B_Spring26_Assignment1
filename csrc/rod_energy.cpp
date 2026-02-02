@@ -14,64 +14,87 @@ static inline double clamp01(double s) {
 // Closest points between segments p1->q1 and p2->q2.
 // Returns parameters s,t in [0,1] minimizing || (p1 + s d1) - (p2 + t d2) ||.
 // Implementation adapted from standard segment-segment distance derivations (Ericson-style).
+// Closest points between segments p1->q1 and p2->q2.
+// Robust implementation (Dan Sunday / geomalgorithms).
 static inline void closest_segment_params(
     const double p1[3], const double q1[3],
     const double p2[3], const double q2[3],
-    double &s, double &t
+    double &sc, double &tc
 ) {
-    const double d1[3] = { q1[0]-p1[0], q1[1]-p1[1], q1[2]-p1[2] };
-    const double d2[3] = { q2[0]-p2[0], q2[1]-p2[1], q2[2]-p2[2] };
-    const double r[3]  = { p1[0]-p2[0], p1[1]-p2[1], p1[2]-p2[2] };
+    const double u[3] = { q1[0]-p1[0], q1[1]-p1[1], q1[2]-p1[2] };
+    const double v[3] = { q2[0]-p2[0], q2[1]-p2[1], q2[2]-p2[2] };
+    const double w[3] = { p1[0]-p2[0], p1[1]-p2[1], p1[2]-p2[2] };
 
-    const double a = d1[0]*d1[0] + d1[1]*d1[1] + d1[2]*d1[2]; // ||d1||^2
-    const double e = d2[0]*d2[0] + d2[1]*d2[1] + d2[2]*d2[2]; // ||d2||^2
-    const double b = d1[0]*d2[0] + d1[1]*d2[1] + d1[2]*d2[2];
-    const double c = d1[0]*r[0]  + d1[1]*r[1]  + d1[2]*r[2];
-    const double f = d2[0]*r[0]  + d2[1]*r[1]  + d2[2]*r[2];
+    const double a = u[0]*u[0] + u[1]*u[1] + u[2]*u[2]; // dot(u,u)
+    const double b = u[0]*v[0] + u[1]*v[1] + u[2]*v[2]; // dot(u,v)
+    const double c = v[0]*v[0] + v[1]*v[1] + v[2]*v[2]; // dot(v,v)
+    const double d = u[0]*w[0] + u[1]*w[1] + u[2]*w[2]; // dot(u,w)
+    const double e = v[0]*w[0] + v[1]*w[1] + v[2]*w[2]; // dot(v,w)
 
-    const double EPS = 1e-14;
+    const double SMALL = 1e-14;
+    const double D = a*c - b*b;
 
-    // Handle degenerate segments
-    if (a <= EPS && e <= EPS) {
-        // both are points
-        s = 0.0; t = 0.0;
-        return;
-    }
-    if (a <= EPS) {
-        // first is a point
-        s = 0.0;
-        t = clamp01(f / e);
-        return;
-    }
-    if (e <= EPS) {
-        // second is a point
-        t = 0.0;
-        s = clamp01(-c / a);
-        return;
-    }
+    double sN, sD = D;
+    double tN, tD = D;
 
-    // General case
-    const double denom = a*e - b*b;
-
-    if (denom > EPS) {
-        s = clamp01((b*f - c*e) / denom);
+    // compute the line parameters of the two closest points
+    if (D < SMALL) {
+        // the lines are almost parallel
+        sN = 0.0;
+        sD = 1.0;
+        tN = e;
+        tD = c;
     } else {
-        // nearly parallel
-        s = 0.0;
+        sN = (b*e - c*d);
+        tN = (a*e - b*d);
+        if (sN < 0.0) {
+            // sc < 0 => clamp to 0
+            sN = 0.0;
+            tN = e;
+            tD = c;
+        } else if (sN > sD) {
+            // sc > 1 => clamp to 1
+            sN = sD;
+            tN = e + b;
+            tD = c;
+        }
     }
 
-    // Solve for t given s
-    t = (b*s + f) / e;
-
-    // Clamp t, and recompute s if needed (standard segment-segment clamping logic)
-    if (t < 0.0) {
-        t = 0.0;
-        s = clamp01(-c / a);
-    } else if (t > 1.0) {
-        t = 1.0;
-        s = clamp01((b - c) / a);
+    // clamp tc to [0,1]
+    if (tN < 0.0) {
+        tN = 0.0;
+        // recompute sc for this tc
+        if (-d < 0.0) {
+            sN = 0.0;
+        } else if (-d > a) {
+            sN = sD;
+        } else {
+            sN = -d;
+            sD = a;
+        }
+    } else if (tN > tD) {
+        tN = tD;
+        // recompute sc for this tc
+        if ((-d + b) < 0.0) {
+            sN = 0.0;
+        } else if ((-d + b) > a) {
+            sN = sD;
+        } else {
+            sN = (-d + b);
+            sD = a;
+        }
     }
+
+    sc = (std::abs(sN) < SMALL ? 0.0 : sN / sD);
+    tc = (std::abs(tN) < SMALL ? 0.0 : tN / tD);
+
+    // final clamp (safety)
+    if (sc < 0.0) sc = 0.0;
+    if (sc > 1.0) sc = 1.0;
+    if (tc < 0.0) tc = 0.0;
+    if (tc > 1.0) tc = 1.0;
 }
+
 
 // Exported API
 void rod_energy_grad(
