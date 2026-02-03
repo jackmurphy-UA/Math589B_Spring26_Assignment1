@@ -198,7 +198,7 @@ void rod_energy_grad(
 
             // dU/dd = 24 eps (sr6 - 2 sr12) / d
             // gradient factor in coordinates = dU/dd * (r/d) = 24 eps (sr6 - 2 sr12) / d^2 * r
-            const double factor = 24.0 * eps * (sr6 - 2.0*sr12) * (invd * invd);
+            const double factor = 48.0 * eps * (sr6 - 2.0*sr12) * (invd * invd);
 
             const double gx = factor * rx;
             const double gy = factor * ry;
