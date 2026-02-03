@@ -128,7 +128,7 @@ def bfgs(
         # Cap step length to avoid huge jumps (stabilizes stiff WCA cases)
         p_norm = float(np.linalg.norm(p))
         if np.isfinite(p_norm) and p_norm > 0.0:
-            step_max = 0.20  # safe default; tune 0.20–0.35 if needed
+            step_max = 0.15  # safe default; tune 0.20–0.35 if needed
             alpha_cap = step_max / p_norm
         else:
             alpha_cap = 1.0
