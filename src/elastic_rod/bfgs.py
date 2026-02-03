@@ -25,8 +25,8 @@ def backtracking_line_search(
     p: np.ndarray,
     alpha0: float = 1.0,
     c1: float = 1e-4,
-    tau: float = 0.6,
-    max_steps: int = 20,
+    tau: float = 0.5,
+    max_steps: int = 25,
 ) -> Tuple[float, float, np.ndarray, int]:
     """
     Armijo backtracking line search with a safe fallback:
@@ -136,17 +136,22 @@ def bfgs(
         y = g_new - g
 
         ys = float(np.dot(y, s))
+        yTy = float(np.dot(y, y))
         sTs = float(np.dot(s, s))
 
-        if np.isfinite(ys) and ys > 1e-14 * sTs:
+        if np.isfinite(ys) and np.isfinite(yTy) and ys > 1e-14 * sTs and yTy > 0.0:
             rho = 1.0 / ys
             Hy = H @ y
             yHy = float(np.dot(y, Hy))
             H += (1.0 + rho * yHy) * rho * np.outer(s, s) - rho * (np.outer(s, Hy) + np.outer(Hy, s))
         else:
-            if (not np.isfinite(ys)) or (ys <= 0.0):
-                H[:] = np.eye(n, dtype=np.float64)
-            # else: keep H unchanged
+            # scaled identity reset instead of plain identity
+            gamma = 1.0
+            if np.isfinite(ys) and np.isfinite(yTy) and ys > 0.0 and yTy > 0.0:
+                gamma = ys / yTy
+                # clamp gamma to avoid crazy scaling
+                gamma = float(np.clip(gamma, 1e-6, 1e6))
+            H[:] = gamma * np.eye(n, dtype=np.float64)
 
         x = x_new
         f = float(f_new)
@@ -156,6 +161,6 @@ def bfgs(
         hist["gnorm"].append(float(np.linalg.norm(g)))
 
         # warm start next iteration line search
-        alpha = min(1.0, 1.1 * alpha)
+        alpha = min(1.0, 1.05 * alpha)
 
     return BFGSResult(x=x, f=f, g=g, n_iter=max_iter, n_feval=n_feval, converged=False, history=hist)
