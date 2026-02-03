@@ -149,7 +149,7 @@ def bfgs(
             f_and_g, x, f, g, p,
             alpha0=min(alpha0_use, alpha_cap),
             c1=(1e-6 if small_problem else 1e-4),
-            tau=0.5,
+            tau=(0.6 if small_problem else 0.5),
             max_steps=25,
         )
         n_feval += inc
