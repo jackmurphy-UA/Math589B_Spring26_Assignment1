@@ -39,7 +39,6 @@ def backtracking_line_search(
         p = -g
         gtp = float(np.dot(g, p))
         if not np.isfinite(gtp) or gtp >= 0.0:
-            # can't find a descent direction
             return 0.0, float(f), np.asarray(g, dtype=np.float64), 0
 
     alpha = float(alpha0)
@@ -58,13 +57,11 @@ def backtracking_line_search(
             f_new = float(f_new)
             g_new = np.asarray(g_new, dtype=np.float64)
 
-            # Track best seen (even if Armijo fails)
             if f_new < best_f:
                 best_f = f_new
                 best_alpha = alpha
                 best_g = g_new
 
-            # Armijo accept
             if f_new <= f + c1 * alpha * gtp:
                 return alpha, f_new, g_new, n_feval_inc
 
@@ -72,11 +69,10 @@ def backtracking_line_search(
         if alpha < 1e-16:
             break
 
-    # Fallback: take best improvement if we found one
     if best_alpha > 0.0 and best_f < f:
         return best_alpha, best_f, best_g, n_feval_inc
 
-    # Last-resort: tiny step ONLY if it decreases f (prevents catastrophic blow-ups)
+    # tiny step only if it decreases
     alpha = 1e-6
     x_new = x + alpha * p
     f_new, g_new = f_and_g(x_new)
@@ -94,9 +90,6 @@ def bfgs(
     max_iter: int = 200,
     alpha0: float = 1.0,
 ) -> BFGSResult:
-    """
-    Inverse-Hessian BFGS with Armijo line search and curvature safeguards.
-    """
     x = np.ascontiguousarray(x0, dtype=np.float64).copy()
     f, g = f_and_g(x)
     f = float(f)
@@ -108,14 +101,13 @@ def bfgs(
 
     hist: Dict[str, Any] = {"f": [f], "gnorm": [float(np.linalg.norm(g))], "alpha": []}
 
-    alpha = float(alpha0)  # warm-start line search
+    alpha = float(alpha0)
 
     for k in range(max_iter):
         gnorm = float(np.linalg.norm(g))
         if gnorm < tol:
-            return BFGSResult(
-                x=x, f=f, g=g, n_iter=k, n_feval=n_feval, converged=True, history=hist
-            )
+            return BFGSResult(x=x, f=f, g=g, n_iter=k, n_feval=n_feval,
+                              converged=True, history=hist)
 
         p = -(H @ g)
 
@@ -125,26 +117,50 @@ def bfgs(
             H[:] = np.eye(n, dtype=np.float64)
             p = -g
 
-        # Cap step length to avoid huge jumps (stabilizes stiff WCA cases)
+        # step-length cap (trust-region-lite)
         p_norm = float(np.linalg.norm(p))
         if np.isfinite(p_norm) and p_norm > 0.0:
-            step_max = 0.15  # safe default; tune 0.20–0.35 if needed
+            step_max = 0.25
             alpha_cap = step_max / p_norm
         else:
             alpha_cap = 1.0
 
-        alpha, f_new, g_new, inc = backtracking_line_search(
+        alpha_ls, f_new, g_new, inc = backtracking_line_search(
             f_and_g, x, f, g, p, alpha0=min(alpha, alpha_cap)
         )
         n_feval += inc
-        hist["alpha"].append(float(alpha))
+        hist["alpha"].append(float(alpha_ls))
 
-        if alpha == 0.0:
-            return BFGSResult(
-                x=x, f=f, g=g, n_iter=k, n_feval=n_feval, converged=False, history=hist
-            )
+        if alpha_ls == 0.0:
+            # ---- NEW: forced descent fallback (prevents “stalling” in accuracy mode) ----
+            # Take a few very small gradient steps that guarantee monotone decrease if possible.
+            # This rarely triggers in the speed suite, but helps the accuracy suite a lot.
+            did_step = False
+            for _ in range(5):
+                p_fallback = -g
+                pfb_norm = float(np.linalg.norm(p_fallback))
+                if not np.isfinite(pfb_norm) or pfb_norm == 0.0:
+                    break
+                a = min(1e-3, 0.05 / pfb_norm)
+                x_try = x + a * p_fallback
+                f_try, g_try = f_and_g(x_try)
+                n_feval += 1
+                if np.isfinite(f_try) and np.all(np.isfinite(g_try)) and float(f_try) < f:
+                    x = x_try
+                    f = float(f_try)
+                    g = np.asarray(g_try, dtype=np.float64)
+                    H[:] = np.eye(n, dtype=np.float64)
+                    hist["f"].append(f)
+                    hist["gnorm"].append(float(np.linalg.norm(g)))
+                    alpha = a
+                    did_step = True
+                    break
+            if not did_step:
+                return BFGSResult(x=x, f=f, g=g, n_iter=k, n_feval=n_feval,
+                                  converged=False, history=hist)
+            continue
 
-        x_new = x + alpha * p
+        x_new = x + alpha_ls * p
         s = x_new - x
         y = g_new - g
 
@@ -160,7 +176,6 @@ def bfgs(
                 np.outer(s, Hy) + np.outer(Hy, s)
             )
         else:
-            # scaled identity reset instead of plain identity
             gamma = 1.0
             if np.isfinite(ys) and np.isfinite(yTy) and ys > 0.0 and yTy > 0.0:
                 gamma = ys / yTy
@@ -174,9 +189,7 @@ def bfgs(
         hist["f"].append(f)
         hist["gnorm"].append(float(np.linalg.norm(g)))
 
-        # warm start next iteration line search (gentle growth)
-        alpha = min(1.0, 1.05 * alpha)
+        alpha = min(1.0, 1.05 * alpha_ls)
 
-    return BFGSResult(
-        x=x, f=f, g=g, n_iter=max_iter, n_feval=n_feval, converged=False, history=hist
-    )
+    return BFGSResult(x=x, f=f, g=g, n_iter=max_iter, n_feval=n_feval,
+                      converged=False, history=hist)
