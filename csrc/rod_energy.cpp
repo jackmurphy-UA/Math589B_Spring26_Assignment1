@@ -158,7 +158,7 @@ void rod_energy_grad(
         double Pi[3] = { get(i,0), get(i,1), get(i,2) };
         double Qi[3] = { get(i+1,0), get(i+1,1), get(i+1,2) };
 
-        // key change (friend's rule): j starts at i+3 => excludes within two steps forward
+        // key change: j starts at i+3 => excludes within two steps forward
         for (int j = i + 3; j < N; ++j) {
             int dj = j - i;
 
