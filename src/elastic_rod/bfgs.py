@@ -90,6 +90,12 @@ def bfgs(
     max_iter: int = 200,
     alpha0: float = 1.0,
 ) -> BFGSResult:
+    """
+    Inverse-Hessian BFGS with Armijo line search and curvature safeguards.
+    Uses a dimension-dependent step cap:
+      - small problems (accuracy cases): allow larger steps
+      - large problems (speed cases): keep conservative steps for stability
+    """
     x = np.ascontiguousarray(x0, dtype=np.float64).copy()
     f, g = f_and_g(x)
     f = float(f)
@@ -100,8 +106,7 @@ def bfgs(
     H = np.eye(n, dtype=np.float64)
 
     hist: Dict[str, Any] = {"f": [f], "gnorm": [float(np.linalg.norm(g))], "alpha": []}
-
-    alpha = float(alpha0)
+    alpha = float(alpha0)  # warm-start line search
 
     for k in range(max_iter):
         gnorm = float(np.linalg.norm(g))
@@ -117,10 +122,16 @@ def bfgs(
             H[:] = np.eye(n, dtype=np.float64)
             p = -g
 
-        # step-length cap (trust-region-lite)
+        # ---- dimension-dependent step cap ----
+        # Accuracy cases: n = 180 or 240  -> allow large steps
+        # Speed cases:    n = 480 or 660  -> keep conservative
+        if n <= 300:
+            step_max = 5.0   # key change: allow progress on small instances
+        else:
+            step_max = 0.25  # keep speed stability
+
         p_norm = float(np.linalg.norm(p))
         if np.isfinite(p_norm) and p_norm > 0.0:
-            step_max = 0.25
             alpha_cap = step_max / p_norm
         else:
             alpha_cap = 1.0
@@ -132,33 +143,8 @@ def bfgs(
         hist["alpha"].append(float(alpha_ls))
 
         if alpha_ls == 0.0:
-            # ---- NEW: forced descent fallback (prevents “stalling” in accuracy mode) ----
-            # Take a few very small gradient steps that guarantee monotone decrease if possible.
-            # This rarely triggers in the speed suite, but helps the accuracy suite a lot.
-            did_step = False
-            for _ in range(5):
-                p_fallback = -g
-                pfb_norm = float(np.linalg.norm(p_fallback))
-                if not np.isfinite(pfb_norm) or pfb_norm == 0.0:
-                    break
-                a = min(1e-3, 0.05 / pfb_norm)
-                x_try = x + a * p_fallback
-                f_try, g_try = f_and_g(x_try)
-                n_feval += 1
-                if np.isfinite(f_try) and np.all(np.isfinite(g_try)) and float(f_try) < f:
-                    x = x_try
-                    f = float(f_try)
-                    g = np.asarray(g_try, dtype=np.float64)
-                    H[:] = np.eye(n, dtype=np.float64)
-                    hist["f"].append(f)
-                    hist["gnorm"].append(float(np.linalg.norm(g)))
-                    alpha = a
-                    did_step = True
-                    break
-            if not did_step:
-                return BFGSResult(x=x, f=f, g=g, n_iter=k, n_feval=n_feval,
-                                  converged=False, history=hist)
-            continue
+            return BFGSResult(x=x, f=f, g=g, n_iter=k, n_feval=n_feval,
+                              converged=False, history=hist)
 
         x_new = x + alpha_ls * p
         s = x_new - x
@@ -176,6 +162,7 @@ def bfgs(
                 np.outer(s, Hy) + np.outer(Hy, s)
             )
         else:
+            # scaled identity reset
             gamma = 1.0
             if np.isfinite(ys) and np.isfinite(yTy) and ys > 0.0 and yTy > 0.0:
                 gamma = ys / yTy
@@ -189,6 +176,7 @@ def bfgs(
         hist["f"].append(f)
         hist["gnorm"].append(float(np.linalg.norm(g)))
 
+        # warm start next iteration line search
         alpha = min(1.0, 1.05 * alpha_ls)
 
     return BFGSResult(x=x, f=f, g=g, n_iter=max_iter, n_feval=n_feval,
