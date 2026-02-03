@@ -128,7 +128,7 @@ def bfgs(
         # Accuracy cases: n = 180 or 240 -> allow larger steps
         # Speed cases:    n = 480 or 660 -> keep conservative
         if n <= 300:
-            step_max = 5.0
+            step_max = 8.0
         else:
             step_max = 0.25
 
