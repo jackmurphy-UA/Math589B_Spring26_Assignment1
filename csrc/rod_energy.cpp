@@ -3,19 +3,9 @@
 
 extern "C" {
 
-// Bump when you change the exported function signatures.
 int rod_api_version() { return 2; }
 
-// Helper clamp
-static inline double clamp01(double s) {
-    return (s < 0.0) ? 0.0 : (s > 1.0 ? 1.0 : s);
-}
-
-// Closest points between segments p1->q1 and p2->q2.
-// Returns parameters s,t in [0,1] minimizing || (p1 + s d1) - (p2 + t d2) ||.
-// Implementation adapted from standard segment-segment distance derivations (Ericson-style).
-// Closest points between segments p1->q1 and p2->q2.
-// Robust implementation (Dan Sunday / geomalgorithms).
+// Robust closest parameters between segments p1->q1 and p2->q2 (Dan Sunday / geomalgorithms).
 static inline void closest_segment_params(
     const double p1[3], const double q1[3],
     const double p2[3], const double q2[3],
@@ -25,11 +15,11 @@ static inline void closest_segment_params(
     const double v[3] = { q2[0]-p2[0], q2[1]-p2[1], q2[2]-p2[2] };
     const double w[3] = { p1[0]-p2[0], p1[1]-p2[1], p1[2]-p2[2] };
 
-    const double a = u[0]*u[0] + u[1]*u[1] + u[2]*u[2]; // dot(u,u)
-    const double b = u[0]*v[0] + u[1]*v[1] + u[2]*v[2]; // dot(u,v)
-    const double c = v[0]*v[0] + v[1]*v[1] + v[2]*v[2]; // dot(v,v)
-    const double d = u[0]*w[0] + u[1]*w[1] + u[2]*w[2]; // dot(u,w)
-    const double e = v[0]*w[0] + v[1]*w[1] + v[2]*w[2]; // dot(v,w)
+    const double a = u[0]*u[0] + u[1]*u[1] + u[2]*u[2];
+    const double b = u[0]*v[0] + u[1]*v[1] + u[2]*v[2];
+    const double c = v[0]*v[0] + v[1]*v[1] + v[2]*v[2];
+    const double d = u[0]*w[0] + u[1]*w[1] + u[2]*w[2];
+    const double e = v[0]*w[0] + v[1]*w[1] + v[2]*w[2];
 
     const double SMALL = 1e-14;
     const double D = a*c - b*b;
@@ -37,9 +27,8 @@ static inline void closest_segment_params(
     double sN, sD = D;
     double tN, tD = D;
 
-    // compute the line parameters of the two closest points
     if (D < SMALL) {
-        // the lines are almost parallel
+        // almost parallel
         sN = 0.0;
         sD = 1.0;
         tN = e;
@@ -47,23 +36,20 @@ static inline void closest_segment_params(
     } else {
         sN = (b*e - c*d);
         tN = (a*e - b*d);
+
         if (sN < 0.0) {
-            // sc < 0 => clamp to 0
             sN = 0.0;
             tN = e;
             tD = c;
         } else if (sN > sD) {
-            // sc > 1 => clamp to 1
             sN = sD;
             tN = e + b;
             tD = c;
         }
     }
 
-    // clamp tc to [0,1]
     if (tN < 0.0) {
         tN = 0.0;
-        // recompute sc for this tc
         if (-d < 0.0) {
             sN = 0.0;
         } else if (-d > a) {
@@ -74,7 +60,6 @@ static inline void closest_segment_params(
         }
     } else if (tN > tD) {
         tN = tD;
-        // recompute sc for this tc
         if ((-d + b) < 0.0) {
             sN = 0.0;
         } else if ((-d + b) > a) {
@@ -88,24 +73,23 @@ static inline void closest_segment_params(
     sc = (std::abs(sN) < SMALL ? 0.0 : sN / sD);
     tc = (std::abs(tN) < SMALL ? 0.0 : tN / tD);
 
-    // final clamp (safety)
+    // safety clamp
     if (sc < 0.0) sc = 0.0;
     if (sc > 1.0) sc = 1.0;
     if (tc < 0.0) tc = 0.0;
     if (tc > 1.0) tc = 1.0;
 }
 
-
-// Exported API
+// Exported API v2
 void rod_energy_grad(
     int N,
     const double* x,
     double kb,
     double ks,
     double l0,
-    double kc,     // confinement strength
-    double eps,    // WCA epsilon
-    double sigma,  // WCA sigma
+    double kc,
+    double eps,
+    double sigma,
     double* energy_out,
     double* grad_out
 ) {
@@ -164,24 +148,22 @@ void rod_energy_grad(
         }
     }
 
-    // ---- Segment–segment WCA self-avoidance ----
-    // Segments: (i,i+1), periodic. Exclude adjacent segments (including wrap).
-    // WCA cutoff: rc = 2^(1/6) * sigma
+    // ---- Segment–segment WCA self-avoidance with "within two steps" exclusion ----
+    // WCA cutoff rc = 2^(1/6) * sigma, energy shifted so U(rc)=0.
     const double rc = std::pow(2.0, 1.0/6.0) * sigma;
     const double rc2 = rc * rc;
     const double tiny = 1e-12;
 
     for (int i = 0; i < N; ++i) {
-        // segment i: Pi -> Qi
         double Pi[3] = { get(i,0), get(i,1), get(i,2) };
         double Qi[3] = { get(i+1,0), get(i+1,1), get(i+1,2) };
 
-        for (int j = i+1; j < N; ++j) {
-            // Exclusions: skip same/adjacent segments, including wrap neighbors.
-            // Adjacent if |i-j| <= 1 or |i-j| >= N-1
+        // key change (friend's rule): j starts at i+3 => excludes within two steps forward
+        for (int j = i + 3; j < N; ++j) {
             int dj = j - i;
-            if (dj <= 1) continue;
-            if (dj >= N-1) continue;
+
+            // excludes within two steps "across wrap"
+            if (dj >= N - 2) continue;
 
             double Pj[3] = { get(j,0), get(j,1), get(j,2) };
             double Qj[3] = { get(j+1,0), get(j+1,1), get(j+1,2) };
@@ -189,62 +171,51 @@ void rod_energy_grad(
             double u, v;
             closest_segment_params(Pi, Qi, Pj, Qj, u, v);
 
-            // Closest points
             const double Di[3] = { Qi[0]-Pi[0], Qi[1]-Pi[1], Qi[2]-Pi[2] };
             const double Dj[3] = { Qj[0]-Pj[0], Qj[1]-Pj[1], Qj[2]-Pj[2] };
 
-            double Ci[3] = { Pi[0] + u*Di[0], Pi[1] + u*Di[1], Pi[2] + u*Di[2] };
-            double Cj[3] = { Pj[0] + v*Dj[0], Pj[1] + v*Dj[1], Pj[2] + v*Dj[2] };
+            const double Ci[3] = { Pi[0] + u*Di[0], Pi[1] + u*Di[1], Pi[2] + u*Di[2] };
+            const double Cj[3] = { Pj[0] + v*Dj[0], Pj[1] + v*Dj[1], Pj[2] + v*Dj[2] };
 
-            double rx = Ci[0] - Cj[0];
-            double ry = Ci[1] - Cj[1];
-            double rz = Ci[2] - Cj[2];
+            const double rx = Ci[0] - Cj[0];
+            const double ry = Ci[1] - Cj[1];
+            const double rz = Ci[2] - Cj[2];
 
-            double d2 = rx*rx + ry*ry + rz*rz;
+            const double d2 = rx*rx + ry*ry + rz*rz;
             if (d2 >= rc2) continue;
 
-            double d = std::sqrt(std::max(d2, tiny));
-
-            // WCA energy: 4 eps [ (sigma/d)^12 - (sigma/d)^6 ] + eps
+            const double d = std::sqrt(std::max(d2, tiny));
             const double invd = 1.0 / d;
+
             const double sr = sigma * invd;
             const double sr2 = sr * sr;
             const double sr6 = sr2 * sr2 * sr2;
             const double sr12 = sr6 * sr6;
+
+            // shifted WCA
             const double U = 4.0 * eps * (sr12 - sr6) + eps;
             E += U;
 
-            // dU/dd = 24 eps * (sr6 - 2 sr12) / d
-            // Gradient wrt coordinates: dU/dx = (dU/dd) * (r/d) * weight
-            // Combine: factor = 24 eps (sr6 - 2 sr12) / d^2
+            // dU/dd = 24 eps (sr6 - 2 sr12) / d
+            // gradient factor in coordinates = dU/dd * (r/d) = 24 eps (sr6 - 2 sr12) / d^2 * r
             const double factor = 24.0 * eps * (sr6 - 2.0*sr12) * (invd * invd);
 
-            // r vector
             const double gx = factor * rx;
             const double gy = factor * ry;
             const double gz = factor * rz;
 
-            // Distribute to endpoints using linear interpolation weights
             const double wi0 = (1.0 - u);
             const double wi1 = u;
             const double wj0 = (1.0 - v);
             const double wj1 = v;
 
-            // Segment i endpoints: + (wi0, wi1) * g
-            addg(i,   0, wi0 * gx);
-            addg(i,   1, wi0 * gy);
-            addg(i,   2, wi0 * gz);
-            addg(i+1, 0, wi1 * gx);
-            addg(i+1, 1, wi1 * gy);
-            addg(i+1, 2, wi1 * gz);
+            // i endpoints: +weights * g
+            addg(i,   0, wi0 * gx);  addg(i,   1, wi0 * gy);  addg(i,   2, wi0 * gz);
+            addg(i+1, 0, wi1 * gx);  addg(i+1, 1, wi1 * gy);  addg(i+1, 2, wi1 * gz);
 
-            // Segment j endpoints: - (wj0, wj1) * g
-            addg(j,   0, -wj0 * gx);
-            addg(j,   1, -wj0 * gy);
-            addg(j,   2, -wj0 * gz);
-            addg(j+1, 0, -wj1 * gx);
-            addg(j+1, 1, -wj1 * gy);
-            addg(j+1, 2, -wj1 * gz);
+            // j endpoints: -weights * g
+            addg(j,   0, -wj0 * gx); addg(j,   1, -wj0 * gy); addg(j,   2, -wj0 * gz);
+            addg(j+1, 0, -wj1 * gx); addg(j+1, 1, -wj1 * gy); addg(j+1, 2, -wj1 * gz);
         }
     }
 
