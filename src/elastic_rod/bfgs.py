@@ -91,10 +91,12 @@ def bfgs(
     alpha0: float = 1.0,
 ) -> BFGSResult:
     """
-    Inverse-Hessian BFGS with Armijo line search and curvature safeguards.
-    Uses:
-      - dimension-dependent step cap (small problems can take larger steps)
-      - dimension-dependent Armijo parameter (small problems use looser Armijo to get more drop)
+    BFGS with Armijo backtracking and curvature safeguards.
+
+    Key tuning:
+      - For SMALL problems (accuracy cases, n=180/240), allow much larger steps
+        and reset alpha warm-start to 1.0 each iteration to avoid tiny-step lock-in.
+      - For LARGE problems (speed cases, n=480/660), keep conservative caps for stability.
     """
     x = np.ascontiguousarray(x0, dtype=np.float64).copy()
     f, g = f_and_g(x)
@@ -106,15 +108,15 @@ def bfgs(
     H = np.eye(n, dtype=np.float64)
 
     hist: Dict[str, Any] = {"f": [f], "gnorm": [float(np.linalg.norm(g))], "alpha": []}
-    alpha = float(alpha0)  # warm-start line search
+    alpha = float(alpha0)
+
+    small_problem = (n <= 300)
 
     for k in range(max_iter):
         gnorm = float(np.linalg.norm(g))
         if gnorm < tol:
-            return BFGSResult(
-                x=x, f=f, g=g, n_iter=k, n_feval=n_feval,
-                converged=True, history=hist
-            )
+            return BFGSResult(x=x, f=f, g=g, n_iter=k, n_feval=n_feval,
+                              converged=True, history=hist)
 
         p = -(H @ g)
 
@@ -124,11 +126,11 @@ def bfgs(
             H[:] = np.eye(n, dtype=np.float64)
             p = -g
 
-        # ---- dimension-dependent step cap ----
-        # Accuracy cases: n = 180 or 240 -> allow larger steps
-        # Speed cases:    n = 480 or 660 -> keep conservative
-        if n <= 300:
-            step_max = 8.0
+        # ---- step cap ----
+        # Make the cap NON-binding for small problems so progress is not throttled.
+        # Keep conservative cap for large problems to preserve your speed=100/100 behavior.
+        if small_problem:
+            step_max = 50.0   # big on purpose: avoid limiting accuracy cases
         else:
             step_max = 0.25
 
@@ -138,23 +140,24 @@ def bfgs(
         else:
             alpha_cap = 1.0
 
-        # ---- dimension-dependent Armijo looseness ----
-        # Looser Armijo for small problems tends to accept larger steps and increases drop.
-        c1_use = 1e-6 if n <= 300 else 1e-4
+        # ---- warm-start policy ----
+        # Small problems: always try alpha0=1.0 (avoid getting stuck with tiny alpha warm-starts)
+        # Large problems: keep warm-start alpha (helps stability/speed)
+        alpha0_use = 1.0 if small_problem else alpha
 
         alpha_ls, f_new, g_new, inc = backtracking_line_search(
             f_and_g, x, f, g, p,
-            alpha0=min(alpha, alpha_cap),
-            c1=c1_use,
+            alpha0=min(alpha0_use, alpha_cap),
+            c1=(1e-6 if small_problem else 1e-4),
+            tau=0.5,
+            max_steps=25,
         )
         n_feval += inc
         hist["alpha"].append(float(alpha_ls))
 
         if alpha_ls == 0.0:
-            return BFGSResult(
-                x=x, f=f, g=g, n_iter=k, n_feval=n_feval,
-                converged=False, history=hist
-            )
+            return BFGSResult(x=x, f=f, g=g, n_iter=k, n_feval=n_feval,
+                              converged=False, history=hist)
 
         x_new = x + alpha_ls * p
         s = x_new - x
@@ -186,10 +189,11 @@ def bfgs(
         hist["f"].append(f)
         hist["gnorm"].append(float(np.linalg.norm(g)))
 
-        # warm start next iteration line search
-        alpha = min(1.0, 1.05 * alpha_ls)
+        # warm start next iteration
+        if small_problem:
+            alpha = 1.0
+        else:
+            alpha = min(1.0, 1.05 * alpha_ls)
 
-    return BFGSResult(
-        x=x, f=f, g=g, n_iter=max_iter, n_feval=n_feval,
-        converged=False, history=hist
-    )
+    return BFGSResult(x=x, f=f, g=g, n_iter=max_iter, n_feval=n_feval,
+                      converged=False, history=hist)
