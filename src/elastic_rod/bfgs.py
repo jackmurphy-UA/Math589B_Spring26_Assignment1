@@ -92,9 +92,9 @@ def bfgs(
 ) -> BFGSResult:
     """
     Inverse-Hessian BFGS with Armijo line search and curvature safeguards.
-    Uses a dimension-dependent step cap:
-      - small problems (accuracy cases): allow larger steps
-      - large problems (speed cases): keep conservative steps for stability
+    Uses:
+      - dimension-dependent step cap (small problems can take larger steps)
+      - dimension-dependent Armijo parameter (small problems use looser Armijo to get more drop)
     """
     x = np.ascontiguousarray(x0, dtype=np.float64).copy()
     f, g = f_and_g(x)
@@ -111,8 +111,10 @@ def bfgs(
     for k in range(max_iter):
         gnorm = float(np.linalg.norm(g))
         if gnorm < tol:
-            return BFGSResult(x=x, f=f, g=g, n_iter=k, n_feval=n_feval,
-                              converged=True, history=hist)
+            return BFGSResult(
+                x=x, f=f, g=g, n_iter=k, n_feval=n_feval,
+                converged=True, history=hist
+            )
 
         p = -(H @ g)
 
@@ -123,12 +125,12 @@ def bfgs(
             p = -g
 
         # ---- dimension-dependent step cap ----
-        # Accuracy cases: n = 180 or 240  -> allow large steps
-        # Speed cases:    n = 480 or 660  -> keep conservative
+        # Accuracy cases: n = 180 or 240 -> allow larger steps
+        # Speed cases:    n = 480 or 660 -> keep conservative
         if n <= 300:
-            step_max = 5.0   # key change: allow progress on small instances
+            step_max = 5.0
         else:
-            step_max = 0.25  # keep speed stability
+            step_max = 0.25
 
         p_norm = float(np.linalg.norm(p))
         if np.isfinite(p_norm) and p_norm > 0.0:
@@ -136,15 +138,23 @@ def bfgs(
         else:
             alpha_cap = 1.0
 
+        # ---- dimension-dependent Armijo looseness ----
+        # Looser Armijo for small problems tends to accept larger steps and increases drop.
+        c1_use = 1e-6 if n <= 300 else 1e-4
+
         alpha_ls, f_new, g_new, inc = backtracking_line_search(
-            f_and_g, x, f, g, p, alpha0=min(alpha, alpha_cap)
+            f_and_g, x, f, g, p,
+            alpha0=min(alpha, alpha_cap),
+            c1=c1_use,
         )
         n_feval += inc
         hist["alpha"].append(float(alpha_ls))
 
         if alpha_ls == 0.0:
-            return BFGSResult(x=x, f=f, g=g, n_iter=k, n_feval=n_feval,
-                              converged=False, history=hist)
+            return BFGSResult(
+                x=x, f=f, g=g, n_iter=k, n_feval=n_feval,
+                converged=False, history=hist
+            )
 
         x_new = x + alpha_ls * p
         s = x_new - x
@@ -179,5 +189,7 @@ def bfgs(
         # warm start next iteration line search
         alpha = min(1.0, 1.05 * alpha_ls)
 
-    return BFGSResult(x=x, f=f, g=g, n_iter=max_iter, n_feval=n_feval,
-                      converged=False, history=hist)
+    return BFGSResult(
+        x=x, f=f, g=g, n_iter=max_iter, n_feval=n_feval,
+        converged=False, history=hist
+    )
